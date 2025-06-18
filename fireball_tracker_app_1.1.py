@@ -8,22 +8,17 @@ import random
 import datetime
 
 st.set_page_config(page_title="Illinois Pick 3 Fireball Tracker", layout="centered")
-
 st.title("🔥 Illinois Pick 3 Fireball Tracker")
 
-# --- 1. Load or Input Draw Data ---
-st.subheader("📥 Input or Fetch Draw History")
-
-# Session state for history
+# 1. Session Storage of Draw History
 if "draw_history" not in st.session_state:
     st.session_state.draw_history = pd.DataFrame(columns=["date", "main", "fireball"])
 
-# Manual entry
-with st.expander("➕ Manually Add a Draw"):
-    date = st.date_input("Draw Date", datetime.date.today())
-    main = st.text_input("Main Pick 3 (e.g., 278)")
-    fireball = st.text_input("Fireball (0-9)")
-
+# 2. Manual entry & CSV upload
+with st.expander("➕ Add a Draw"):
+    date = st.date_input("Date", datetime.date.today())
+    main = st.text_input("Main 3‑digit (e.g., 278)")
+    fireball = st.text_input("Fireball (0–9)")
     if st.button("Add Draw"):
         if len(main) == 3 and fireball.isdigit() and len(fireball) == 1:
             st.session_state.draw_history = pd.concat([
@@ -32,89 +27,79 @@ with st.expander("➕ Manually Add a Draw"):
             ], ignore_index=True)
             st.success("Draw added!")
         else:
-            st.error("Please enter a valid 3-digit main number and 1-digit Fireball.")
+            st.error("Invalid input — try again.")
 
-# Upload CSV
-uploaded = st.file_uploader("Or upload a CSV file with columns: date, main, fireball")
+uploaded = st.file_uploader("Upload CSV (columns: date, main, fireball)", type="csv")
 if uploaded:
-    df_uploaded = pd.read_csv(uploaded)
-    st.session_state.draw_history = pd.concat([st.session_state.draw_history, df_uploaded], ignore_index=True)
-    st.success("CSV uploaded!")
+    df_u = pd.read_csv(uploaded)
+    st.session_state.draw_history = pd.concat([st.session_state.draw_history, df_u], ignore_index=True)
+    st.success("CSV data added!")
 
-# Auto-fetch from Illinois Lottery site
+# 3. Accurate auto-fetching from IL Lottery
 def fetch_latest_draw():
     url = "https://www.illinoislottery.com/dbg/results/pick3"
-    res = requests.get(url)
-    soup = BeautifulSoup(res.text, "html.parser")
-
-    entry = soup.select_one("ul.results > li")
-    if not entry:
+    r = requests.get(url)
+    s = BeautifulSoup(r.text, "html.parser")
+    li = s.select_one("ul.results li")  # gets newest draw
+    if not li:
         return None
 
-    date = entry.select_one(".date").get_text(strip=True)
-    nums = entry.select(".draw-numbers .ball")
-    fb = entry.select_one(".fireball")
+    text = li.get_text(separator=" ").split()
+    # Example: ['Tuesday', 'Jun', '17', '2025', 'evening', '6', '2', '9', '5']
+    # Date = first 4 tokens, digits = last 4 digits
+    try:
+        draw_date = " ".join(text[0:4])
+        digits = text[-4:-1]
+        fb = text[-1]
+        main = "".join(digits)
+        return {"date": draw_date, "main": main, "fireball": fb}
+    except:
+        return None
 
-    if len(nums) == 3 and fb:
-        main = "".join(n.get_text(strip=True) for n in nums)
-        fire = fb.get_text(strip=True)
-        return {"date": date, "main": main, "fireball": fire}
-    return None
-
-if st.button("🔄 Auto-Fetch Latest Draw"):
-    result = fetch_latest_draw()
-    if result:
+if st.button("🔄 Auto‑Fetch Latest Draw"):
+    res = fetch_latest_draw()
+    if res:
         st.session_state.draw_history = pd.concat([
             st.session_state.draw_history,
-            pd.DataFrame([result])
+            pd.DataFrame([res])
         ], ignore_index=True)
-        st.success(f"Fetched and added draw: {result['main']} Fireball: {result['fireball']}")
+        st.success(f"Fetched {res['main']} (Fireball {res['fireball']}) on {res['date']}")
     else:
-        st.error("Could not fetch draw. Website structure may have changed.")
+        st.error("Fetch failed. Site layout may have changed.")
 
-# Display current draw history
+# 4. Display history
 st.dataframe(st.session_state.draw_history.tail(10), use_container_width=True)
 
-# --- 2. Frequency Analysis ---
-st.subheader("📊 Frequency Analysis")
-
+# 5. Frequency Analysis & Suggestions
 if not st.session_state.draw_history.empty:
-    all_main_digits = [int(d) for num in st.session_state.draw_history["main"] for d in num]
-    main_freq = Counter(all_main_digits)
+    # Frequency counts
+    all_main = [int(d) for row in st.session_state.draw_history["main"] for d in row]
+    main_freq = Counter(all_main)
     fire_freq = Counter(map(int, st.session_state.draw_history["fireball"]))
 
-    df_main = pd.DataFrame(main_freq.items(), columns=["Digit", "Main Frequency"]).sort_values(by="Main Frequency", ascending=False)
-    df_fire = pd.DataFrame(fire_freq.items(), columns=["Digit", "Fireball Frequency"]).sort_values(by="Fireball Frequency", ascending=False)
+    df_main = pd.DataFrame(main_freq.items(), columns=["Digit", "Main Freq"]).set_index("Digit")
+    df_fire = pd.DataFrame(fire_freq.items(), columns=["Digit", "Fireball Freq"]).set_index("Digit")
 
-    st.write("**Main Digit Frequency**")
-    st.bar_chart(df_main.set_index("Digit"))
-
-    st.write("**Fireball Digit Frequency**")
-    st.bar_chart(df_fire.set_index("Digit"))
+    st.bar_chart(df_main)
+    st.bar_chart(df_fire)
 
     hot_main = [d for d, _ in main_freq.most_common(3)]
     cold_main = [d for d, _ in main_freq.most_common()[-3:]]
     hot_fire = [d for d, _ in fire_freq.most_common(3)]
-    cold_fire = [d for d, _ in fire_freq.most_common()[-3:]]
 
-    # --- 3. Suggested Combinations ---
-    st.subheader("🎯 Suggested Combinations")
-
-    def gen_combos(main_digits, fire_digits, n=5):
+    def gen(nlist, flist):
         combos = []
-        for _ in range(n):
-            m = ''.join(str(random.choice(main_digits)) for _ in range(3))
-            f = str(random.choice(fire_digits))
-            combos.append((m, f))
+        for _ in range(5):
+            combos.append(("".join(str(random.choice(nlist)) for _ in range(3)),
+                           str(random.choice(flist))))
         return combos
 
-    hot_combos = gen_combos(hot_main, hot_fire)
-    cold_combos = gen_combos(cold_main, hot_fire)
-
-    df_suggestions = pd.DataFrame({
-        "🔥 Hot Combos": [f"{m} (FB: {f})" for m, f in hot_combos],
-        "❄️ Cold Combos": [f"{m} (FB: {f})" for m, f in cold_combos]
+    hot = gen(hot_main, hot_fire)
+    cold = gen(cold_main, hot_fire)
+    df_sug = pd.DataFrame({
+        "🔥Hot Combinations": [f"{m} (FB: {f})" for m, f in hot],
+        "❄️Cold Combinations": [f"{m} (FB: {f})" for m, f in cold],
     })
-    st.dataframe(df_suggestions, use_container_width=True)
+    st.dataframe(df_sug, use_container_width=True)
 else:
-    st.info("Please add or fetch draw data to begin analysis.")
+    st.info("Add or fetch at least one draw to begin.")
